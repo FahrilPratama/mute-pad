@@ -12,9 +12,8 @@ cask "mutepad" do
   app "MutePad.app"
 
   postflight_steps do
-    # Remove Gatekeeper quarantine attribute and reset stale ad-hoc TCC entries
+    # Remove Gatekeeper quarantine attribute for unsigned open-source releases
     run "/usr/bin/xattr", args: ["-cr", "/Applications/MutePad.app"]
-    run "/usr/bin/tccutil", args: ["reset", "Accessibility", "com.fahrilpratama.MutePad"]
   end
 
   zap trash: "~/Library/Preferences/com.fahrilpratama.MutePad.plist"
