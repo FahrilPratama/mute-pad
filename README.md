@@ -1,12 +1,8 @@
 # MutePad
 
-[![Release](https://img.shields.io/github/actions/workflow/status/FahrilPratama/mute-pad/release.yml?branch=main&style=for-the-badge&label=Build)](https://github.com/FahrilPratama/mute-pad/actions/workflows/release.yml)
-[![Status: Beta](https://img.shields.io/badge/Status-Beta%20(v0.1.0--beta.4)-orange?style=for-the-badge)](https://github.com/FahrilPratama/mute-pad/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 [![macOS 13.0+](https://img.shields.io/badge/macOS-13.0%2B-black?style=for-the-badge&logo=apple)](https://www.apple.com/macos/)
 [![Buy Me a Coffee (PayPal)](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-PayPal-00457C?style=for-the-badge&logo=paypal&logoColor=white)](https://paypal.me/FRprojet)
-
-> **Public Beta (`v0.1.0-beta.4`)**: MutePad is currently in public beta. Feedback and bug reports are welcome via [GitHub Issues](https://github.com/FahrilPratama/mute-pad/issues).
 
 **MutePad** is a lightweight, native macOS Menu Bar utility built with **Swift** and **SwiftUI + AppKit**, optimized for **Apple Silicon (M-Series)** on **macOS 13.0 (Ventura)+**.
 
@@ -64,14 +60,13 @@ xcodebuild -project MutePad.xcodeproj -scheme MutePad -configuration Release bui
 
 ---
 
-## Required macOS Permissions
+## Required macOS Permission
 
-MutePad uses pure user-space APIs (no kernel extensions or system modifications) and requires two standard macOS privacy permissions:
+MutePad uses pure user-space APIs (no kernel extensions or system modifications) and requires only **one** macOS privacy permission:
 
-1. **Accessibility (`AXIsProcessTrusted`)**: Required by `CGEventTap` to intercept and drop built-in trackpad events.
-2. **Input Monitoring (`IOHIDCheckAccess`)**: Required by `IOHIDManager` to observe real-time HID input activity and accurately correlate external mouse vs. built-in trackpad events.
+- **Accessibility (`AXIsProcessTrusted`)**: Required by `CGEventTap` (`.cghidEventTap`) to intercept and block built-in trackpad events while keeping external mouse input active.
 
-MutePad displays an inline onboarding banner whenever either permission is missing, with one-click buttons to open the exact **System Settings > Privacy & Security** pane.
+MutePad displays an inline onboarding banner whenever Accessibility permission is missing, with a one-click button to trigger the system permission prompt.
 
 ---
 

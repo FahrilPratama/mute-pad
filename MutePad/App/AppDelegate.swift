@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let deviceMonitor = DeviceMonitor()
     let permissionManager = PermissionManager()
     let hotkeyManager = HotkeyManager()
-    private lazy var trackpadBlocker = TrackpadBlocker(deviceMonitor: deviceMonitor)
+    let trackpadBlocker = TrackpadBlocker()
 
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
@@ -176,22 +176,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
 
+        trackpadBlocker.onEmergencyUnlock = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.unlockTrackpad()
+            }
+        }
+
         permissionManager.$isAccessibilityGranted
             .dropFirst()
             .removeDuplicates()
             .sink { [weak self] granted in
                 if granted {
-                    self?.evaluateAutoLockState()
-                }
-            }
-            .store(in: &cancellables)
-
-        permissionManager.$isInputMonitoringGranted
-            .dropFirst()
-            .removeDuplicates()
-            .sink { [weak self] granted in
-                if granted {
-                    self?.deviceMonitor.reopenIfInputMonitoringGranted()
                     self?.evaluateAutoLockState()
                 }
             }
@@ -252,20 +247,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         button.toolTip = description
     }
 
+    func closePopover() {
+        popover?.performClose(nil)
+    }
+
     @objc private func togglePopover(_ sender: AnyObject?) {
         guard let popover, let button = statusItem?.button else { return }
         if popover.isShown {
             popover.performClose(sender)
         } else {
             permissionManager.refreshStatus()
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
         }
     }
 
     private func openPopover() {
         guard let popover, let button = statusItem?.button, !popover.isShown else { return }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
     }
 }

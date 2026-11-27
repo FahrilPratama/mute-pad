@@ -1,46 +1,65 @@
-import AppKit
 import CoreGraphics
 import Foundation
 import os
 
-/// Intercepts built-in trackpad pointer, click, scroll, and optionally multi-touch gesture events
-/// via a user-space `CGEventTap` while passing external mouse events through with zero added latency.
+/// Intercepts built-in trackpad pointer, click, drag, and scroll events exclusively at
+/// `.cghidEventTap` using real-time finger contact state from `TrackpadTouchMonitor`,
+/// anchoring the cursor via `CGWarpMouseCursorPosition` so WindowServer cannot move it.
 final class TrackpadBlocker {
-    /// `NX_SUBTYPE_MOUSE_TOUCH` from `<IOKit/hidsystem/IOLLEvent.h>`.
-    private static let nxSubtypeMouseTouch: Int64 = 3
-    /// Undocumented but stable CoreGraphics gesture event types (`kCGEventGesture`, `kCGEventFluidTouchGesture`).
+    struct Diagnostics {
+        let tapCreationFailed: Bool
+        let blockedEventCount: Int
+    }
+
+    private static let escapeKeyCode: Int64 = 53
     private static let gestureEventTypeRaw: UInt32 = 29
     private static let fluidGestureEventTypeRaw: UInt32 = 31
 
     private struct ConfigSnapshot {
         var isLocked: Bool = false
         var allowMultiTouchGestures: Bool = true
+        var tapCreationFailed: Bool = false
+        var blockedEventCount: Int = 0
+        var lastAllowedCursorPosition: CGPoint?
     }
 
     private var configLock = os_unfair_lock_s()
     private var config = ConfigSnapshot()
 
-    private weak var deviceMonitor: DeviceMonitor?
+    /// Tracks recent Escape key presses for the 3x-in-1s emergency unlock fail-safe.
+    private var escapePressTimestamps: [CFAbsoluteTime] = []
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
     var onTapCreationFailed: (() -> Void)?
-
-    init(deviceMonitor: DeviceMonitor) {
-        self.deviceMonitor = deviceMonitor
-    }
+    var onEmergencyUnlock: (() -> Void)?
 
     deinit {
         stop()
+    }
+
+    func diagnosticsSnapshot() -> Diagnostics {
+        os_unfair_lock_lock(&configLock)
+        let snapshot = Diagnostics(
+            tapCreationFailed: config.tapCreationFailed,
+            blockedEventCount: config.blockedEventCount
+        )
+        os_unfair_lock_unlock(&configLock)
+        return snapshot
     }
 
     func updateState(isLocked: Bool, allowMultiTouchGestures: Bool) {
         os_unfair_lock_lock(&configLock)
         config.isLocked = isLocked
         config.allowMultiTouchGestures = allowMultiTouchGestures
+        if !isLocked {
+            escapePressTimestamps.removeAll()
+        }
         os_unfair_lock_unlock(&configLock)
 
         if isLocked {
+            TrackpadTouchMonitor.shared.start()
             ensureTapStarted()
         } else {
             stop()
@@ -55,31 +74,31 @@ final class TrackpadBlocker {
             return
         }
 
-        let mouseEvents: [CGEventType] = [
+        let interceptedEvents: [CGEventType] = [
             .leftMouseDown,
             .leftMouseUp,
             .rightMouseDown,
             .rightMouseUp,
+            .otherMouseDown,
+            .otherMouseUp,
             .mouseMoved,
             .leftMouseDragged,
             .rightMouseDragged,
+            .otherMouseDragged,
             .scrollWheel,
-            .otherMouseDown,
-            .otherMouseUp,
-            .otherMouseDragged
+            .keyDown
         ]
 
-        var eventMask: CGEventMask = mouseEvents.reduce(0) { mask, type in
+        var eventMask: CGEventMask = interceptedEvents.reduce(0) { mask, type in
             mask | (1 << type.rawValue)
         }
-        // Include gesture masks so we can optionally block multi-touch gestures when configured.
         eventMask |= (1 << Self.gestureEventTypeRaw)
         eventMask |= (1 << Self.fluidGestureEventTypeRaw)
 
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
+            tap: .cghidEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: eventMask,
@@ -92,11 +111,19 @@ final class TrackpadBlocker {
             },
             userInfo: userInfo
         ) else {
+            os_unfair_lock_lock(&configLock)
+            config.tapCreationFailed = true
+            os_unfair_lock_unlock(&configLock)
+            NSLog("MutePad: CGEvent.tapCreate(.cghidEventTap) returned nil.")
             DispatchQueue.main.async {
                 self.onTapCreationFailed?()
             }
             return
         }
+
+        os_unfair_lock_lock(&configLock)
+        config.tapCreationFailed = false
+        os_unfair_lock_unlock(&configLock)
 
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
@@ -107,6 +134,8 @@ final class TrackpadBlocker {
     }
 
     func stop() {
+        TrackpadTouchMonitor.shared.stop()
+
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
             runLoopSource = nil
@@ -132,61 +161,77 @@ final class TrackpadBlocker {
             return Unmanaged.passUnretained(event)
         }
 
+        // Passive Escape (keyCode 53) emergency unlock: 3 presses within 1 second.
+        if type == .keyDown {
+            handlePassiveKeyDown(event)
+            return Unmanaged.passUnretained(event)
+        }
+
         os_unfair_lock_lock(&configLock)
-        let currentConfig = config
+        let isLocked = config.isLocked
+        let allowMultiTouchGestures = config.allowMultiTouchGestures
+        let lastAllowedPos = config.lastAllowedCursorPosition
+        if !isLocked {
+            config.lastAllowedCursorPosition = event.location
+        }
         os_unfair_lock_unlock(&configLock)
 
-        guard currentConfig.isLocked else {
+        guard isLocked else {
             return Unmanaged.passUnretained(event)
         }
 
-        // Handle multi-touch gesture events (e.g., 3/4-finger swipe between spaces, Mission Control).
-        if type.rawValue == Self.gestureEventTypeRaw || type.rawValue == Self.fluidGestureEventTypeRaw {
-            if currentConfig.allowMultiTouchGestures {
+        let touchMonitor = TrackpadTouchMonitor.shared
+        let touchState = touchMonitor.currentTouchState()
+
+        if touchState.isTrackpadTouched {
+            if allowMultiTouchGestures && touchState.activeFingerCount >= 3 {
                 return Unmanaged.passUnretained(event)
             }
-            if isFromBuiltInTrackpad(event: event, type: type, isGesture: true) {
-                return nil
-            }
-            return Unmanaged.passUnretained(event)
-        }
 
-        if isFromBuiltInTrackpad(event: event, type: type, isGesture: false) {
+            os_unfair_lock_lock(&configLock)
+            config.blockedEventCount += 1
+            os_unfair_lock_unlock(&configLock)
+
+            if let anchorPos = lastAllowedPos {
+                CGWarpMouseCursorPosition(anchorPos)
+            }
             return nil
         }
+
+        // External mouse event: update last valid cursor position and pass through.
+        os_unfair_lock_lock(&configLock)
+        config.lastAllowedCursorPosition = event.location
+        os_unfair_lock_unlock(&configLock)
 
         return Unmanaged.passUnretained(event)
     }
 
-    /// Combines CGEvent subtype inspection (`NX_SUBTYPE_MOUSE_TOUCH`), continuous scroll flags,
-    /// and real-time `IOHIDManager` input timestamps to distinguish built-in trackpad events
-    /// from external mouse events accurately.
-    private func isFromBuiltInTrackpad(event: CGEvent, type: CGEventType, isGesture: Bool) -> Bool {
-        let recentSource = deviceMonitor?.classifyRecentInputSource() ?? .unknown
-        let subtype = event.getIntegerValueField(.mouseEventSubtype)
+    private func handlePassiveKeyDown(_ event: CGEvent) {
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        guard keyCode == Self.escapeKeyCode else { return }
 
-        if isGesture {
-            return recentSource != .externalMouse
-        }
+        let isAutoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        guard !isAutoRepeat else { return }
 
-        if subtype == Self.nxSubtypeMouseTouch {
-            // Touch-generated mouse event: drop unless an external touch mouse (e.g. Magic Mouse)
-            // was unmistakably the sole recent HID source.
-            return recentSource != .externalMouse
-        }
+        let now = CFAbsoluteTimeGetCurrent()
+        var shouldEmergencyUnlock = false
 
-        if type == .scrollWheel {
-            let isContinuous = event.getIntegerValueField(.scrollWheelEventIsContinuous) != 0
-            if isContinuous && recentSource != .externalMouse {
-                return true
+        os_unfair_lock_lock(&configLock)
+        if config.isLocked {
+            escapePressTimestamps.append(now)
+            escapePressTimestamps.removeAll { now - $0 > 1.0 }
+            if escapePressTimestamps.count >= 3 {
+                escapePressTimestamps.removeAll()
+                config.isLocked = false
+                shouldEmergencyUnlock = true
             }
         }
+        os_unfair_lock_unlock(&configLock)
 
-        // Fallback for non-touch-subtype clicks/drags from the built-in trackpad.
-        if recentSource == .builtInTrackpad {
-            return true
+        if shouldEmergencyUnlock {
+            DispatchQueue.main.async {
+                self.onEmergencyUnlock?()
+            }
         }
-
-        return false
     }
 }

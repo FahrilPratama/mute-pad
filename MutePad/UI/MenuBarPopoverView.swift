@@ -6,12 +6,21 @@ struct MenuBarPopoverView: View {
     @ObservedObject var permissionManager: PermissionManager
     @ObservedObject var hotkeyManager: HotkeyManager
 
+    @State private var tapCreationFailed: Bool = false
+    @State private var activeFingerCount: Int = 0
+    @State private var blockedEventCount: Int = 0
+
+    private let diagnosticTimer = Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             headerSection
 
             if !permissionManager.allPermissionsGranted {
-                PermissionBannerView(permissionManager: permissionManager)
+                PermissionBannerView(
+                    permissionManager: permissionManager,
+                    onBeforeOpenSettings: { appDelegate.closePopover() }
+                )
             }
 
             Divider()
@@ -29,9 +38,17 @@ struct MenuBarPopoverView: View {
             Divider()
 
             footerSection
+
+            diagnosticBar
         }
         .padding(14)
         .frame(width: 348)
+        .onReceive(diagnosticTimer) { _ in
+            refreshDiagnostics()
+        }
+        .onAppear {
+            refreshDiagnostics()
+        }
     }
 
     // MARK: - Sections
@@ -52,7 +69,7 @@ struct MenuBarPopoverView: View {
                 HStack(spacing: 6) {
                     Text("MutePad")
                         .font(.headline)
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0-beta.1")")
+                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -179,5 +196,42 @@ struct MenuBarPopoverView: View {
             .foregroundStyle(.secondary)
             .font(.subheadline)
         }
+    }
+
+    private var diagnosticBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(tapCreationFailed ? Color.red : Color.green)
+                    .frame(width: 6, height: 6)
+                Text(tapCreationFailed ? "HID Tap: FAILED (Toggle Accessibility OFF/ON)" : "HID Tap: Active")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(tapCreationFailed ? Color.red : Color.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text("Fingers: \(activeFingerCount)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+
+            Text("Blocked: \(blockedEventCount)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+
+    private func refreshDiagnostics() {
+        let diag = appDelegate.trackpadBlocker.diagnosticsSnapshot()
+        tapCreationFailed = diag.tapCreationFailed
+        blockedEventCount = diag.blockedEventCount
+        activeFingerCount = TrackpadTouchMonitor.shared.activeFingerCount
     }
 }
