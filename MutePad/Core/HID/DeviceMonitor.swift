@@ -37,18 +37,9 @@ final class DeviceMonitor: ObservableObject {
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         hidManager = manager
 
-        // Match only Mouse (0x02) and Pointer (0x01) for device enumeration.
-        let matchingCriteria: [[String: Any]] = [
-            [
-                kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
-                kIOHIDDeviceUsageKey: kHIDUsage_GD_Mouse
-            ],
-            [
-                kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop,
-                kIOHIDDeviceUsageKey: kHIDUsage_GD_Pointer
-            ]
-        ]
-        IOHIDManagerSetDeviceMatchingMultiple(manager, matchingCriteria as CFArray)
+        // Match all HID devices so mice advertising pointer usages inside DeviceUsagePairs
+        // (such as Logitech Options+ virtual/BLE devices) are not missed.
+        IOHIDManagerSetDeviceMatching(manager, nil)
 
         let context = Unmanaged.passUnretained(self).toOpaque()
 
@@ -97,21 +88,21 @@ final class DeviceMonitor: ObservableObject {
     // MARK: - HID Callbacks
 
     private func handleDeviceMatched(_ device: IOHIDDevice) {
+        guard isMouseOrPointerDevice(device) else { return }
+
         let pointer = Unmanaged.passUnretained(device).toOpaque()
         let vendorID = intProperty(device, key: kIOHIDVendorIDKey) ?? 0
         let productID = intProperty(device, key: kIOHIDProductIDKey) ?? 0
         let transport = stringProperty(device, key: kIOHIDTransportKey) ?? ""
         let productName = stringProperty(device, key: kIOHIDProductKey) ?? "External Mouse"
 
-        if isBuiltInAppleTrackpad(vendorID: vendorID, transport: transport, device: device) {
-            builtInTrackpadInterfaces.insert(pointer)
-            DispatchQueue.main.async {
-                self.hasBuiltInTrackpad = !self.builtInTrackpadInterfaces.isEmpty
+        if isBuiltInDevice(transport: transport, device: device) {
+            if vendorID == 0x05AC {
+                builtInTrackpadInterfaces.insert(pointer)
+                DispatchQueue.main.async {
+                    self.hasBuiltInTrackpad = !self.builtInTrackpadInterfaces.isEmpty
+                }
             }
-            return
-        }
-
-        guard isSupportedExternalTransport(transport) else {
             return
         }
 
@@ -185,31 +176,36 @@ final class DeviceMonitor: ObservableObject {
 
     // MARK: - Classification Helpers
 
-    private func isBuiltInAppleTrackpad(vendorID: Int, transport: String, device: IOHIDDevice) -> Bool {
-        let normalizedTransport = transport.uppercased()
-        let isAppleVendor = vendorID == 0x05AC
-        let isInternalBus = normalizedTransport == "SPI" || normalizedTransport == "FIFO"
-        if isAppleVendor && isInternalBus {
+    private func isMouseOrPointerDevice(_ device: IOHIDDevice) -> Bool {
+        if let primaryPage = intProperty(device, key: kIOHIDPrimaryUsagePageKey),
+           let primaryUsage = intProperty(device, key: kIOHIDPrimaryUsageKey),
+           primaryPage == kHIDPage_GenericDesktop,
+           primaryUsage == kHIDUsage_GD_Mouse || primaryUsage == kHIDUsage_GD_Pointer {
             return true
         }
-        if isAppleVendor,
-           let builtIn = IOHIDDeviceGetProperty(device, kIOHIDBuiltInKey as CFString) as? Bool,
-           builtIn,
-           normalizedTransport != "USB",
-           normalizedTransport != "BLUETOOTH",
-           normalizedTransport != "BLUETOOTHLOWENERGY" {
-            return true
+
+        if let usagePairs = IOHIDDeviceGetProperty(device, kIOHIDDeviceUsagePairsKey as CFString) as? [[String: Any]] {
+            for pair in usagePairs {
+                let page = (pair[kIOHIDDeviceUsagePageKey] as? NSNumber)?.intValue
+                let usage = (pair[kIOHIDDeviceUsageKey] as? NSNumber)?.intValue
+                if page == kHIDPage_GenericDesktop,
+                   usage == kHIDUsage_GD_Mouse || usage == kHIDUsage_GD_Pointer {
+                    return true
+                }
+            }
         }
+
         return false
     }
 
-    private func isSupportedExternalTransport(_ transport: String) -> Bool {
-        switch transport.lowercased() {
-        case "usb", "bluetooth", "bluetoothlowenergy":
+    private func isBuiltInDevice(transport: String, device: IOHIDDevice) -> Bool {
+        if let builtIn = IOHIDDeviceGetProperty(device, kIOHIDBuiltInKey as CFString) as? Bool,
+           builtIn {
             return true
-        default:
-            return false
         }
+
+        let normalizedTransport = transport.uppercased()
+        return normalizedTransport == "SPI" || normalizedTransport == "FIFO"
     }
 
     private func intProperty(_ device: IOHIDDevice, key: String) -> Int? {

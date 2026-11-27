@@ -22,15 +22,18 @@ struct HIDDeviceModel: Identifiable, Codable, Equatable, Hashable {
 
     /// Friendly transport label.
     var transportDisplay: String {
-        switch transport.lowercased() {
+        let normalized = transport.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
         case "usb":
             return "USB / 2.4GHz"
         case "bluetooth":
             return "Bluetooth"
-        case "bluetoothlowenergy":
+        case "bluetoothlowenergy", "bluetooth low energy":
             return "Bluetooth LE"
+        case "", "virtual":
+            return "Bluetooth / Wireless"
         default:
-            return transport.isEmpty ? "External" : transport
+            return transport
         }
     }
 

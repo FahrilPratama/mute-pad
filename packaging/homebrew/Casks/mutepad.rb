@@ -1,5 +1,5 @@
 cask "mutepad" do
-  version "1.0.0"
+  version "1.0.1"
   sha256 :no_check
 
   url "https://github.com/FahrilPratama/mute-pad/releases/download/v#{version}/MutePad.dmg"

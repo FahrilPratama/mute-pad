@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import os
@@ -25,6 +26,7 @@ final class TrackpadBlocker {
 
     private var configLock = os_unfair_lock_s()
     private var config = ConfigSnapshot()
+    private var builtInTrackpadDeviceID: Int?
 
     /// Tracks recent Escape key presses for the 3x-in-1s emergency unlock fail-safe.
     private var escapePressTimestamps: [CFAbsoluteTime] = []
@@ -182,8 +184,36 @@ final class TrackpadBlocker {
 
         let touchMonitor = TrackpadTouchMonitor.shared
         let touchState = touchMonitor.currentTouchState()
+        let sourceDeviceID = NSEvent(cgEvent: event)?.deviceID
 
-        if touchState.isTrackpadTouched {
+        if touchMonitor.activeFingerCount > 0,
+           let sid = sourceDeviceID,
+           sid != 0 {
+            os_unfair_lock_lock(&configLock)
+            if builtInTrackpadDeviceID == nil {
+                builtInTrackpadDeviceID = sid
+            }
+            os_unfair_lock_unlock(&configLock)
+        }
+
+        os_unfair_lock_lock(&configLock)
+        let knownTrackpadID = builtInTrackpadDeviceID
+        os_unfair_lock_unlock(&configLock)
+
+        // If we know the built-in trackpad's deviceID and this event has a different
+        // valid deviceID, it is guaranteed to come from an external mouse.
+        if let knownTrackpadID,
+           let sid = sourceDeviceID,
+           sid != knownTrackpadID {
+            os_unfair_lock_lock(&configLock)
+            config.lastAllowedCursorPosition = event.location
+            os_unfair_lock_unlock(&configLock)
+            return Unmanaged.passUnretained(event)
+        }
+
+        let isFromTrackpadSource = (knownTrackpadID == nil) || (sourceDeviceID == knownTrackpadID)
+
+        if touchState.isTrackpadTouched && isFromTrackpadSource {
             if allowMultiTouchGestures && touchState.activeFingerCount >= 3 {
                 return Unmanaged.passUnretained(event)
             }

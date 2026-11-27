@@ -69,7 +69,7 @@ struct MenuBarPopoverView: View {
                 HStack(spacing: 6) {
                     Text("MutePad")
                         .font(.headline)
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")")
+                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1")")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
