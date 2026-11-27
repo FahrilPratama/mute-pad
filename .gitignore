@@ -1,0 +1,14 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# Packaging / Release artifacts
+dist/
+dmg_stage/
+*.dmg
+*.zip
+
+# macOS
+.DS_Store
