@@ -69,7 +69,7 @@ struct MenuBarPopoverView: View {
                 HStack(spacing: 6) {
                     Text("MutePad")
                         .font(.headline)
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1")")
+                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2")")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -99,30 +99,38 @@ struct MenuBarPopoverView: View {
     }
 
     private var settingsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle(isOn: $appDelegate.autoLockEnabled) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Auto-Lock with External Mouse")
                         .font(.subheadline)
                     Text("Locks built-in trackpad when a whitelisted mouse connects.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $appDelegate.autoLockEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
             }
-            .toggleStyle(.switch)
-            .controlSize(.small)
 
-            Toggle(isOn: $appDelegate.allowMultiTouchGestures) {
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Allow Multi-Touch Gestures")
                         .font(.subheadline)
                     Text("Keep desktop swipe & Mission Control gestures active.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                Spacer(minLength: 8)
+                Toggle("", isOn: $appDelegate.allowMultiTouchGestures)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
             }
-            .toggleStyle(.switch)
-            .controlSize(.small)
         }
     }
 

@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let deviceMonitor = DeviceMonitor()
     let permissionManager = PermissionManager()
     let hotkeyManager = HotkeyManager()
-    let trackpadBlocker = TrackpadBlocker()
+    let trackpadBlocker = TrackpadBlocker.shared
 
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
@@ -59,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupFailSafeObservers()
         refreshLaunchAtLoginState()
 
+        permissionManager.resetStaleAccessibilityIfBinaryChanged()
         permissionManager.startPollingIfNeeded()
         deviceMonitor.start()
         hotkeyManager.registerCurrentShortcut()
@@ -186,8 +187,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             .dropFirst()
             .removeDuplicates()
             .sink { [weak self] granted in
-                if granted {
-                    self?.evaluateAutoLockState()
+                // Defer past @Published willSet so permissionManager.isAccessibilityGranted
+                // already reflects the new value when evaluateAutoLockState() reads it.
+                Task { @MainActor [weak self] in
+                    if granted {
+                        self?.evaluateAutoLockState()
+                    }
                 }
             }
             .store(in: &cancellables)

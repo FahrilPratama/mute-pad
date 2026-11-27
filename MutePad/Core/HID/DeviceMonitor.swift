@@ -106,6 +106,11 @@ final class DeviceMonitor: ObservableObject {
             return
         }
 
+        // Never treat Apple vendor internal peripherals (e.g. Keyboard Backlight) as external mice.
+        if vendorID == 0x05AC && productName.localizedCaseInsensitiveContains("Backlight") {
+            return
+        }
+
         let deviceID = String(format: "0x%04X:0x%04X", vendorID, productID)
         var interfaces = activeInterfacesByDeviceID[deviceID] ?? []
         let wasAlreadyConnected = !interfaces.isEmpty
@@ -237,11 +242,13 @@ final class DeviceMonitor: ObservableObject {
               let decoded = try? JSONDecoder().decode([HIDDeviceModel].self, from: data) else {
             return
         }
-        knownDevices = decoded.map {
-            var copy = $0
-            copy.isConnected = false
-            return copy
-        }
+        knownDevices = decoded
+            .filter { !($0.vendorID == 0x05AC && $0.productName.localizedCaseInsensitiveContains("Backlight")) }
+            .map {
+                var copy = $0
+                copy.isConnected = false
+                return copy
+            }
         sortKnownDevices()
     }
 

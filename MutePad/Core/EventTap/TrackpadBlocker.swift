@@ -1,12 +1,13 @@
-import AppKit
 import CoreGraphics
 import Foundation
 import os
 
 /// Intercepts built-in trackpad pointer, click, drag, and scroll events exclusively at
-/// `.cghidEventTap` using real-time finger contact state from `TrackpadTouchMonitor`,
-/// anchoring the cursor via `CGWarpMouseCursorPosition` so WindowServer cannot move it.
+/// `.cghidEventTap` using zero-allocation `CGEventField` inspection and real-time finger
+/// contact state from `TrackpadTouchMonitor`, while keeping external mouse input stutter-free.
 final class TrackpadBlocker {
+    static let shared = TrackpadBlocker()
+
     struct Diagnostics {
         let tapCreationFailed: Bool
         let blockedEventCount: Int
@@ -15,6 +16,7 @@ final class TrackpadBlocker {
     private static let escapeKeyCode: Int64 = 53
     private static let gestureEventTypeRaw: UInt32 = 29
     private static let fluidGestureEventTypeRaw: UInt32 = 31
+    private static let selfPID = Int64(ProcessInfo.processInfo.processIdentifier)
 
     private struct ConfigSnapshot {
         var isLocked: Bool = false
@@ -26,7 +28,6 @@ final class TrackpadBlocker {
 
     private var configLock = os_unfair_lock_s()
     private var config = ConfigSnapshot()
-    private var builtInTrackpadDeviceID: Int?
 
     /// Tracks recent Escape key presses for the 3x-in-1s emergency unlock fail-safe.
     private var escapePressTimestamps: [CFAbsoluteTime] = []
@@ -36,6 +37,13 @@ final class TrackpadBlocker {
 
     var onTapCreationFailed: (() -> Void)?
     var onEmergencyUnlock: (() -> Void)?
+
+    var isTapActive: Bool {
+        os_unfair_lock_lock(&configLock)
+        let active = (eventTap != nil) && !config.tapCreationFailed
+        os_unfair_lock_unlock(&configLock)
+        return active
+    }
 
     deinit {
         stop()
@@ -182,38 +190,27 @@ final class TrackpadBlocker {
             return Unmanaged.passUnretained(event)
         }
 
-        let touchMonitor = TrackpadTouchMonitor.shared
-        let touchState = touchMonitor.currentTouchState()
-        let sourceDeviceID = NSEvent(cgEvent: event)?.deviceID
-
-        if touchMonitor.activeFingerCount > 0,
-           let sid = sourceDeviceID,
-           sid != 0 {
-            os_unfair_lock_lock(&configLock)
-            if builtInTrackpadDeviceID == nil {
-                builtInTrackpadDeviceID = sid
-            }
-            os_unfair_lock_unlock(&configLock)
+        // Always pass multi-touch gesture events (e.g. Mission Control, Space swipe, pinch)
+        // when Allow Multi-Touch Gestures is enabled so the gesture state machine never breaks.
+        if allowMultiTouchGestures &&
+            (type.rawValue == Self.gestureEventTypeRaw || type.rawValue == Self.fluidGestureEventTypeRaw) {
+            return Unmanaged.passUnretained(event)
         }
 
-        os_unfair_lock_lock(&configLock)
-        let knownTrackpadID = builtInTrackpadDeviceID
-        os_unfair_lock_unlock(&configLock)
-
-        // If we know the built-in trackpad's deviceID and this event has a different
-        // valid deviceID, it is guaranteed to come from an external mouse.
-        if let knownTrackpadID,
-           let sid = sourceDeviceID,
-           sid != knownTrackpadID {
+        // Zero-allocation fast-path for driver-injected events (e.g. Logi Options+),
+        // excluding MutePad's own CGWarpMouseCursorPosition events.
+        let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
+        if sourcePID > 0 && sourcePID != Self.selfPID {
             os_unfair_lock_lock(&configLock)
             config.lastAllowedCursorPosition = event.location
             os_unfair_lock_unlock(&configLock)
             return Unmanaged.passUnretained(event)
         }
 
-        let isFromTrackpadSource = (knownTrackpadID == nil) || (sourceDeviceID == knownTrackpadID)
+        let touchMonitor = TrackpadTouchMonitor.shared
+        let touchState = touchMonitor.currentTouchState()
 
-        if touchState.isTrackpadTouched && isFromTrackpadSource {
+        if touchState.isTrackpadTouched {
             if allowMultiTouchGestures && touchState.activeFingerCount >= 3 {
                 return Unmanaged.passUnretained(event)
             }
