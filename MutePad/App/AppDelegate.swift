@@ -36,8 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let permissionManager = PermissionManager()
     let hotkeyManager = HotkeyManager()
     let trackpadBlocker = TrackpadBlocker.shared
+    let updateManager = UpdateManager()
 
     private var statusItem: NSStatusItem?
+    private var updateBadgeView: NSView?
     private var popover: NSPopover?
     private var cancellables = Set<AnyCancellable>()
 
@@ -78,9 +80,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         deviceMonitor.start()
         hotkeyManager.registerCurrentShortcut()
 
+        let didJustSelfUpdate = UpdateManager.consumeDidJustSelfUpdateFlag()
+
         // Evaluate initial state once HID devices finish initial enumeration.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.evaluateAutoLockState()
+            if didJustSelfUpdate {
+                self?.openPopover()
+            }
+        }
+
+        // Perform quiet background update check shortly after launch (throttled to 6h).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            self?.updateManager.checkForUpdatesIfDue()
         }
     }
 
@@ -159,6 +171,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if let button = item.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
+
+            let badge = NSView()
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            badge.wantsLayer = true
+            badge.layer?.backgroundColor = NSColor.systemBlue.cgColor
+            badge.layer?.cornerRadius = 3
+            badge.isHidden = true
+            button.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.widthAnchor.constraint(equalToConstant: 6),
+                badge.heightAnchor.constraint(equalToConstant: 6),
+                badge.topAnchor.constraint(equalTo: button.topAnchor, constant: 3),
+                badge.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -3)
+            ])
+            updateBadgeView = badge
         }
         item.isVisible = showMenuBarIcon
         statusItem = item
@@ -175,13 +202,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 appDelegate: self,
                 deviceMonitor: deviceMonitor,
                 permissionManager: permissionManager,
-                hotkeyManager: hotkeyManager
+                hotkeyManager: hotkeyManager,
+                updateManager: updateManager
             )
         )
         self.popover = popover
     }
 
     private func setupCallbacks() {
+        updateManager.onBeforeSelfUpdateTerminate = { [weak self] in
+            self?.unlockTrackpad()
+            self?.closePopover()
+        }
+
+        updateManager.$availableUpdate
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.updateStatusItemIcon()
+            }
+            .store(in: &cancellables)
+
         deviceMonitor.onBuiltInTrackpadSenderIDsChanged = { [weak self] ids in
             self?.trackpadBlocker.updateBuiltInTrackpadSenderIDs(ids)
         }
@@ -273,12 +313,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func updateStatusItemIcon() {
         guard let button = statusItem?.button else { return }
         let symbolName = isTrackpadLocked ? "computermouse.fill" : "hand.point.up.left.fill"
-        let description = isTrackpadLocked ? "MutePad: Trackpad Locked" : "MutePad: Trackpad Active"
+        let baseDescription = isTrackpadLocked ? "MutePad: Trackpad Locked" : "MutePad: Trackpad Active"
+        let hasUpdate = updateManager.availableUpdate != nil
+        let tooltip = updateManager.availableUpdate.map { "\(baseDescription) (Update v\($0.version) available)" } ?? baseDescription
 
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: baseDescription)
         image?.isTemplate = true
         button.image = image
-        button.toolTip = description
+        button.toolTip = tooltip
+        updateBadgeView?.isHidden = !hasUpdate
     }
 
     func closePopover() {

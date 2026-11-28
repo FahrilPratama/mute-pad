@@ -5,6 +5,7 @@ struct MenuBarPopoverView: View {
     @ObservedObject var deviceMonitor: DeviceMonitor
     @ObservedObject var permissionManager: PermissionManager
     @ObservedObject var hotkeyManager: HotkeyManager
+    @ObservedObject var updateManager: UpdateManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -16,6 +17,11 @@ struct MenuBarPopoverView: View {
                     onBeforeOpenSettings: { appDelegate.closePopover() }
                 )
             }
+
+            UpdateBannerView(
+                updateManager: updateManager,
+                onBeforeOpenExternal: { appDelegate.closePopover() }
+            )
 
             Divider()
 
@@ -55,7 +61,7 @@ struct MenuBarPopoverView: View {
                 HStack(spacing: 6) {
                     Text("MutePad")
                         .font(.headline)
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.2")")
+                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.3")")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -186,7 +192,7 @@ struct MenuBarPopoverView: View {
     }
 
     private var footerSection: some View {
-        HStack {
+        HStack(spacing: 10) {
             Toggle(
                 "Launch at Login",
                 isOn: Binding(
@@ -198,6 +204,24 @@ struct MenuBarPopoverView: View {
             .font(.subheadline)
 
             Spacer()
+
+            Button {
+                updateManager.checkForUpdates(manual: true)
+            } label: {
+                if updateManager.state == .checking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("Check Updates")
+                }
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .font(.subheadline)
+            .disabled(updateManager.isBusy)
+
+            Text("·")
+                .foregroundStyle(.quaternary)
 
             Button("Quit") {
                 NSApp.terminate(nil)
