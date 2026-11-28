@@ -21,6 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             )
         }
     }
+    @Published var showMenuBarIcon: Bool {
+        didSet {
+            UserDefaults.standard.set(showMenuBarIcon, forKey: Keys.showMenuBarIcon)
+            if !showMenuBarIcon {
+                closePopover()
+            }
+            statusItem?.isVisible = showMenuBarIcon
+        }
+    }
     @Published var launchAtLogin: Bool = false
 
     let deviceMonitor = DeviceMonitor()
@@ -35,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private enum Keys {
         static let autoLockEnabled = "MutePad.AutoLockEnabled"
         static let allowMultiTouchGestures = "MutePad.AllowMultiTouchGestures"
+        static let showMenuBarIcon = "MutePad.ShowMenuBarIcon"
     }
 
     override init() {
@@ -45,8 +55,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         if defaults.object(forKey: Keys.allowMultiTouchGestures) == nil {
             defaults.set(true, forKey: Keys.allowMultiTouchGestures)
         }
+        if defaults.object(forKey: Keys.showMenuBarIcon) == nil {
+            defaults.set(true, forKey: Keys.showMenuBarIcon)
+        }
         self.autoLockEnabled = defaults.bool(forKey: Keys.autoLockEnabled)
         self.allowMultiTouchGestures = defaults.bool(forKey: Keys.allowMultiTouchGestures)
+        self.showMenuBarIcon = defaults.bool(forKey: Keys.showMenuBarIcon)
         super.init()
     }
 
@@ -75,6 +89,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         trackpadBlocker.stop()
         deviceMonitor.stop()
         hotkeyManager.unregister()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !showMenuBarIcon {
+            showMenuBarIcon = true
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.openPopover()
+        }
+        return true
     }
 
     // MARK: - Trackpad Lock Control
@@ -136,13 +160,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             button.target = self
             button.action = #selector(togglePopover(_:))
         }
+        item.isVisible = showMenuBarIcon
         statusItem = item
         updateStatusItemIcon()
     }
 
     private func setupPopover() {
         let popover = NSPopover()
-        popover.contentSize = NSSize(width: 348, height: 500)
+        popover.contentSize = NSSize(width: 348, height: 470)
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = NSHostingController(
@@ -157,6 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func setupCallbacks() {
+        deviceMonitor.onBuiltInTrackpadSenderIDsChanged = { [weak self] ids in
+            self?.trackpadBlocker.updateBuiltInTrackpadSenderIDs(ids)
+        }
+
         deviceMonitor.onWhitelistedMouseConnectionChanged = { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.evaluateAutoLockState()
@@ -269,6 +298,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func openPopover() {
+        if !showMenuBarIcon {
+            showMenuBarIcon = true
+        }
         guard let popover, let button = statusItem?.button, !popover.isShown else { return }
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)

@@ -16,6 +16,7 @@ final class TrackpadBlocker {
     private static let escapeKeyCode: Int64 = 53
     private static let gestureEventTypeRaw: UInt32 = 29
     private static let fluidGestureEventTypeRaw: UInt32 = 31
+    private static let senderIDField = CGEventField(rawValue: 87)!
     private static let selfPID = Int64(ProcessInfo.processInfo.processIdentifier)
 
     private struct ConfigSnapshot {
@@ -24,6 +25,7 @@ final class TrackpadBlocker {
         var tapCreationFailed: Bool = false
         var blockedEventCount: Int = 0
         var lastAllowedCursorPosition: CGPoint?
+        var builtInTrackpadSenderIDs: Set<UInt64> = []
     }
 
     private var configLock = os_unfair_lock_s()
@@ -57,6 +59,12 @@ final class TrackpadBlocker {
         )
         os_unfair_lock_unlock(&configLock)
         return snapshot
+    }
+
+    func updateBuiltInTrackpadSenderIDs(_ ids: Set<UInt64>) {
+        os_unfair_lock_lock(&configLock)
+        config.builtInTrackpadSenderIDs = ids
+        os_unfair_lock_unlock(&configLock)
     }
 
     func updateState(isLocked: Bool, allowMultiTouchGestures: Bool) {
@@ -181,19 +189,15 @@ final class TrackpadBlocker {
         let isLocked = config.isLocked
         let allowMultiTouchGestures = config.allowMultiTouchGestures
         let lastAllowedPos = config.lastAllowedCursorPosition
+        let senderID = UInt64(bitPattern: event.getIntegerValueField(Self.senderIDField))
+        let hasSenderIDFilter = !config.builtInTrackpadSenderIDs.isEmpty && senderID != 0
+        let isBuiltInSender = hasSenderIDFilter && config.builtInTrackpadSenderIDs.contains(senderID)
         if !isLocked {
             config.lastAllowedCursorPosition = event.location
         }
         os_unfair_lock_unlock(&configLock)
 
         guard isLocked else {
-            return Unmanaged.passUnretained(event)
-        }
-
-        // Always pass multi-touch gesture events (e.g. Mission Control, Space swipe, pinch)
-        // when Allow Multi-Touch Gestures is enabled so the gesture state machine never breaks.
-        if allowMultiTouchGestures &&
-            (type.rawValue == Self.gestureEventTypeRaw || type.rawValue == Self.fluidGestureEventTypeRaw) {
             return Unmanaged.passUnretained(event)
         }
 
@@ -207,30 +211,41 @@ final class TrackpadBlocker {
             return Unmanaged.passUnretained(event)
         }
 
-        let touchMonitor = TrackpadTouchMonitor.shared
-        let touchState = touchMonitor.currentTouchState()
+        let isGestureEvent = (type.rawValue == Self.gestureEventTypeRaw || type.rawValue == Self.fluidGestureEventTypeRaw)
 
-        if touchState.isTrackpadTouched {
-            if allowMultiTouchGestures && touchState.activeFingerCount >= 3 {
+        // Distinguish built-in trackpad events via CGEventField(87) when available so resting
+        // a palm on the trackpad while typing never blocks external mouse input; fall back to
+        // MultitouchSupport contact state if senderID metadata is unavailable.
+        let isFromBuiltInTrackpad: Bool
+        if hasSenderIDFilter {
+            isFromBuiltInTrackpad = isBuiltInSender
+        } else {
+            if allowMultiTouchGestures && isGestureEvent {
                 return Unmanaged.passUnretained(event)
             }
-
-            os_unfair_lock_lock(&configLock)
-            config.blockedEventCount += 1
-            os_unfair_lock_unlock(&configLock)
-
-            if let anchorPos = lastAllowedPos {
-                CGWarpMouseCursorPosition(anchorPos)
-            }
-            return nil
+            isFromBuiltInTrackpad = TrackpadTouchMonitor.shared.currentTouchState().isTrackpadTouched
         }
 
-        // External mouse event: update last valid cursor position and pass through.
+        guard isFromBuiltInTrackpad else {
+            os_unfair_lock_lock(&configLock)
+            config.lastAllowedCursorPosition = event.location
+            os_unfair_lock_unlock(&configLock)
+            return Unmanaged.passUnretained(event)
+        }
+
+        if allowMultiTouchGestures &&
+            (isGestureEvent || TrackpadTouchMonitor.shared.currentTouchState().activeFingerCount >= 3) {
+            return Unmanaged.passUnretained(event)
+        }
+
         os_unfair_lock_lock(&configLock)
-        config.lastAllowedCursorPosition = event.location
+        config.blockedEventCount += 1
         os_unfair_lock_unlock(&configLock)
 
-        return Unmanaged.passUnretained(event)
+        if let anchorPos = lastAllowedPos {
+            CGWarpMouseCursorPosition(anchorPos)
+        }
+        return nil
     }
 
     private func handlePassiveKeyDown(_ event: CGEvent) {
